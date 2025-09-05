@@ -3,11 +3,12 @@ import json
 import requests
 import os
 import ast
+import threading
 from PyQt5.QtWidgets import (QMainWindow, QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QTextEdit, QPushButton, QFileDialog, QLabel, QMessageBox,
-                             QSplitter, QStatusBar, QAction)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
-from PyQt5.QtGui import QFont, QTextCharFormat, QColor, QSyntaxHighlighter, QTextCursor, QTextDocument
+                             QSplitter, QStatusBar, QAction, QTreeView, QFileSystemModel)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject, QModelIndex
+from PyQt5.QtGui import QFont, QTextCharFormat, QColor, QSyntaxHighlighter, QTextCursor, QTextDocument, QTextOption
 import time
 
 # --- 1. The Worker Thread for API Calls ---
@@ -128,37 +129,60 @@ class CodeHighlighter(QSyntaxHighlighter):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CodeSage - Code Comment Generator")
-        self.setMinimumSize(1000, 700)
+        self.setWindowTitle("DocuCode - Code Comment Generator")
+        self.setMinimumSize(1400, 800)
+        self.current_file_path = None
         
+        # Set a dark theme for the entire application
+        self.setStyleSheet("""
+            QMainWindow { background-color: #1e1e1e; color: #cccccc; }
+            QWidget { background-color: #1e1e1e; color: #cccccc; }
+            QTextEdit { background-color: #2b2b2b; color: #cccccc; border: 1px solid #555555; }
+            QLabel { color: #cccccc; }
+            QPushButton { background-color: #3e3e3e; color: #cccccc; border: 1px solid #555555; padding: 5px; border-radius: 3px; }
+            QPushButton:hover { background-color: #505050; }
+            QMenuBar { background-color: #2b2b2b; color: #cccccc; }
+            QStatusBar { background-color: #2b2b2b; color: #cccccc; }
+            QSplitter::handle { background-color: #3e3e3e; }
+            QTreeView { background-color: #2b2b2b; color: #cccccc; border: 1px solid #555555; }
+        """)
+
+        self.create_menu_bar()
+
         self.main_widget = QWidget()
         self.setCentralWidget(self.main_widget)
         self.layout = QVBoxLayout(self.main_widget)
         
         self.splitter = QSplitter(Qt.Horizontal)
         
-        self.left_panel = QWidget()
-        self.left_layout = QVBoxLayout(self.left_panel)
+        # Panel 1: File System View
+        self.file_model = QFileSystemModel()
+        self.file_view = QTreeView()
+        self.file_view.setModel(self.file_model)
+        self.file_view.clicked.connect(self.on_file_selected)
+        
+        for i in range(1, self.file_model.columnCount()):
+            self.file_view.hideColumn(i)
+        
+        # Panel 2: Code Editor
         self.code_editor = QTextEdit()
         self.code_editor.setFont(QFont('Consolas', 10))
         self.highlighter = CodeHighlighter(self.code_editor.document())
-        self.left_layout.addWidget(QLabel("Code:"))
-        self.left_layout.addWidget(self.code_editor)
+        self.code_editor.setWordWrapMode(QTextOption.NoWrap)
         
-        self.right_panel = QWidget()
-        self.right_layout = QVBoxLayout(self.right_panel)
+        # Panel 3: Generated Comment Display
         self.comment_display = QTextEdit()
         self.comment_display.setReadOnly(True)
         self.comment_display.setFont(QFont('Consolas', 10))
-        self.right_layout.addWidget(QLabel("Generated Comment:"))
-        self.right_layout.addWidget(self.comment_display)
+        self.comment_display.setWordWrapMode(QTextOption.NoWrap)
         
-        self.splitter.addWidget(self.left_panel)
-        self.splitter.addWidget(self.right_panel)
-        self.splitter.setSizes([500, 500])
+        self.splitter.addWidget(self.file_view)
+        self.splitter.addWidget(self.code_editor)
+        self.splitter.addWidget(self.comment_display)
+        self.splitter.setSizes([300, 500, 600])
         
         self.button_layout = QHBoxLayout()
-        self.open_btn = QPushButton("Open File")
+        self.open_btn = QPushButton("Open Folder")
         self.save_btn = QPushButton("Save Comment")
         self.generate_btn = QPushButton("Generate Comment")
         self.clear_btn = QPushButton("Clear All")
@@ -171,7 +195,7 @@ class MainWindow(QMainWindow):
         self.layout.addWidget(self.splitter)
         self.layout.addLayout(self.button_layout)
         
-        self.open_btn.clicked.connect(self.open_file)
+        self.open_btn.clicked.connect(self.open_folder)
         self.save_btn.clicked.connect(self.save_comment)
         self.generate_btn.clicked.connect(self.generate_comment)
         self.clear_btn.clicked.connect(self.clear_all)
@@ -179,21 +203,138 @@ class MainWindow(QMainWindow):
         self.comment_thread = None
         self.update_status("Ready")
 
-    def update_status(self, message):
-        self.statusBar().showMessage(message)
-    
+    def create_menu_bar(self):
+        menubar = self.menuBar()
+        
+        # File Menu
+        file_menu = menubar.addMenu('&File')
+        file_menu.addAction(self.create_action("&Open File", self.open_file, "Ctrl+O", "Open a Python file"))
+        file_menu.addAction(self.create_action("&Create File", self.create_file, "Ctrl+N", "Create a new Python file"))
+        file_menu.addAction(self.create_action("Open &Folder", self.open_folder, "", "Open a folder for browsing"))
+        file_menu.addAction(self.create_action("Create &Folder", self.create_folder, "", "Create a new folder"))
+        file_menu.addSeparator()
+        file_menu.addAction(self.create_action("&Exit", self.close, "Ctrl+Q", "Exit the application"))
+
+        # Save Menu
+        save_menu = menubar.addMenu('&Save')
+        save_menu.addAction(self.create_action("Save &Inline", self.save_inline_comments, "Ctrl+I", "Save comments directly into the code"))
+        save_menu.addAction(self.create_action("Save &Separate File", self.save_comment, "Ctrl+S", "Save comments to a separate file"))
+
+        # Clear Menu
+        clear_menu = menubar.addMenu('&Clear')
+        clear_menu.addAction(self.create_action("Clear &Code", self.clear_program, "Ctrl+L", "Clear the code editor"))
+        clear_menu.addAction(self.create_action("Clear &Comments", self.clear_comments, "Ctrl+E", "Clear the comments panel"))
+        clear_menu.addAction(self.create_action("Clear &All", self.clear_all, "Ctrl+A", "Clear both panels"))
+
+        # Settings Menu (Placeholder)
+        settings_menu = menubar.addMenu('&Settings')
+        settings_menu.addAction(self.create_action("&Placeholder", self.placeholder_action, "", "Placeholder for future settings"))
+        
+    def create_action(self, text, slot, shortcut="", tip=""):
+        action = QAction(text, self)
+        if shortcut:
+            action.setShortcut(shortcut)
+        action.setStatusTip(tip)
+        action.triggered.connect(slot)
+        return action
+
     def open_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Open File", "", "Python Files (*.py);;All Files (*)")
         
         if file_path:
+            self.current_file_path = file_path
             try:
                 with open(file_path, 'r', encoding='utf-8') as file:
                     self.code_editor.setPlainText(file.read())
-                self.update_status(f"Opened {file_path}")
+                self.update_status(f"Opened file: {file_path}")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to open file: {str(e)}")
+
+    def create_file(self):
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Create File", "", "Python Files (*.py);;All Files (*)")
+        if file_path:
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write("# New Python File")
+                self.update_status(f"Created file: {file_path}")
+                self.code_editor.setPlainText("# New Python File")
+                self.current_file_path = file_path
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to create file: {str(e)}")
     
+    def open_folder(self):
+        folder_path = QFileDialog.getExistingDirectory(
+            self, "Open Folder", os.path.expanduser('~'))
+        if folder_path:
+            self.file_model.setRootPath(folder_path)
+            self.file_view.setRootIndex(self.file_model.index(folder_path))
+            self.update_status(f"Opened folder: {folder_path}")
+
+    def create_folder(self):
+        folder_path = QFileDialog.getExistingDirectory(
+            self, "Create Folder In", os.path.expanduser('~'))
+        if folder_path:
+            new_folder_name, ok = QMessageBox.question(self, "Create Folder", "Enter new folder name:", QMessageBox.Yes)
+            if ok and new_folder_name:
+                try:
+                    new_path = os.path.join(folder_path, new_folder_name)
+                    os.makedirs(new_path)
+                    self.update_status(f"Created folder: {new_path}")
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Failed to create folder: {str(e)}")
+
+    def save_inline_comments(self):
+        code = self.code_editor.toPlainText()
+        comments = self.comment_display.toPlainText()
+        
+        if not self.current_file_path:
+            QMessageBox.warning(self, "Warning", "No file is open to save inline comments to.")
+            return
+
+        if not comments.strip():
+            QMessageBox.warning(self, "Warning", "No comments to save inline.")
+            return
+
+        commented_code = ""
+        # Simplified logic for demonstration: prepend a single comment
+        comment_lines = comments.splitlines()
+        commented_code += "# " + "\n# ".join(comment_lines) + "\n"
+        commented_code += code
+        
+        try:
+            with open(self.current_file_path, 'w', encoding='utf-8') as f:
+                f.write(commented_code)
+            self.update_status(f"Inline comments saved to {self.current_file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save file: {str(e)}")
+
+    def clear_program(self):
+        self.code_editor.clear()
+        self.update_status("Code editor cleared.")
+        
+    def clear_comments(self):
+        self.comment_display.clear()
+        self.update_status("Comments panel cleared.")
+    
+    def placeholder_action(self):
+        QMessageBox.information(self, "Settings", "This is a placeholder for future settings.")
+
+    def update_status(self, message):
+        self.statusBar().showMessage(message)
+    
+    def on_file_selected(self, index):
+        file_path = self.file_model.filePath(index)
+        if os.path.isfile(file_path) and file_path.endswith('.py'):
+            self.current_file_path = file_path
+            try:
+                with open(file_path, 'r', encoding='utf-8') as file:
+                    self.code_editor.setPlainText(file.read())
+                self.update_status(f"Opened file: {file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to open file: {str(e)}")
+        
     def save_comment(self):
         comment = self.comment_display.toPlainText()
         if not comment.strip():
@@ -212,36 +353,24 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Error", f"Failed to save file: {str(e)}")
     
     def generate_comment(self):
-        code = self.code_editor.toPlainText()
+        code_blocks = self.get_code_blocks(self.code_editor.toPlainText())
 
-        if not code.strip():
-            QMessageBox.warning(self, "Warning", "No code to generate comment for.")
+        if not code_blocks:
+            QMessageBox.warning(self, "Warning", "No functions or classes found to comment.")
             return
 
         self.set_buttons_enabled(False)
-        self.update_status("Generating comments for each code block...")
+        self.update_status(f"Found {len(code_blocks)} code blocks. Generating comments...")
+        self.comment_display.setPlainText("")
         
-        try:
-            code_blocks = self.get_code_blocks(code)
-            if not code_blocks:
-                self.set_buttons_enabled(True)
-                self.update_status("No functions or classes found to comment.")
-                return
-
-            self.comment_display.setPlainText("")
-            
-            self.comment_thread = QThread()
-            self.worker = CommentGeneratorWorker(code_blocks)
-            self.worker.moveToThread(self.comment_thread)
-            self.comment_thread.started.connect(self.worker.run)
-            self.worker.finished_one.connect(self.on_comment_generated)
-            self.worker.finished_all.connect(self.on_all_comments_generated)
-            self.worker.error.connect(self.on_comment_error)
-            self.comment_thread.start()
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to parse code: {str(e)}")
-            self.set_buttons_enabled(True)
+        self.comment_thread = QThread()
+        self.worker = CommentGeneratorWorker(code_blocks)
+        self.worker.moveToThread(self.comment_thread)
+        self.comment_thread.started.connect(self.worker.run)
+        self.worker.finished_one.connect(self.on_comment_generated)
+        self.worker.finished_all.connect(self.on_all_comments_generated)
+        self.worker.error.connect(self.on_comment_error)
+        self.comment_thread.start()
 
     def get_code_blocks(self, code):
         blocks = []
@@ -263,9 +392,15 @@ class MainWindow(QMainWindow):
         return blocks
 
     def on_comment_generated(self, code, comment):
-        current_text = self.comment_display.toPlainText()
-        new_text = f"Code Block:\n{code}\n\nComment:\n{comment}\n\n"
-        self.comment_display.setPlainText(current_text + new_text)
+        html_comment = f"""
+        <div style="background-color: #2b2b2b; padding: 10px; border-radius: 5px; margin-bottom: 15px;">
+            <p style="color: #cccccc; font-weight: bold;">Code Block:</p>
+            <pre style="color: #cccccc; white-space: pre-wrap; font-family: Consolas;">{code}</pre>
+            <p style="color: #569cd6; font-weight: bold;">Comment:</p>
+            <p style="color: #b5cea8;">{comment}</p>
+        </div>
+        """
+        self.comment_display.insertHtml(html_comment)
 
     def on_all_comments_generated(self):
         self.update_status("All comments generated successfully!")
