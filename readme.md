@@ -1,6 +1,6 @@
 DocuCode: An AI-Powered Code Commenting Tool
 Project Description
-CodeSage is a desktop application that automatically generates descriptive comments for Python code. This tool is designed to enhance code readability and help developers maintain clean, well-documented codebases.
+Docucode is a desktop application that automatically generates descriptive comments for Python code. This tool is designed to enhance code readability and help developers maintain clean, well-documented codebases.
 
 The application uses a fine-tuned deep learning model to understand code logic and produce clear, concise comments for individual functions and classes. It features a modern, intuitive graphical user interface built with PyQt5.
 
