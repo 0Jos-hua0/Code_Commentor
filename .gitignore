@@ -1,0 +1,14 @@
+# Python Virtual Environment
+venv/
+
+# PyInstaller build folders
+dist/
+build/
+*.spec
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# PyTorch/Hugging Face cache folders
+.cache/
